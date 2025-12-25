@@ -1,0 +1,25 @@
+[package]
+name = "udon"
+version = "0.9.0"
+edition = "2021"
+license = "MIT"
+authors = ["Joseph Wecker"]
+description = "Native Ruby extension for the UDON parser"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core parser - using local path for development
+# TODO: Change to git or crates.io for release:
+# udon-core = { git = "https://github.com/josephwecker/libudon.git" }
+udon-core = { path = "../../../libudon/udon-core" }
+
+[dependencies.magnus]
+version = "0.7"
+features = ["rb-sys"]
+
+[dependencies.rb-sys]
+version = "0.9"
+default-features = false
