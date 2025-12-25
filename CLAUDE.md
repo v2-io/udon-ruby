@@ -3,6 +3,15 @@
 This is the Ruby gem for UDON parsing. It wraps the libudon Rust library using
 rb_sys and magnus for native Ruby integration.
 
+## Implementation Plan
+
+**See `~/src/udon/implementation-phase-2.md` for the comprehensive roadmap.**
+
+Current state: Basic event-based parsing works. Phase 2 will add:
+- Lazy tree API (Ruby objects created on access, not upfront)
+- Streaming API with ring buffer
+- World-class error messages
+
 ## Architecture
 
 ```
