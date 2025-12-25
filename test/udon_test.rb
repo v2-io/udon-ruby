@@ -43,8 +43,6 @@ class UdonTest < Minitest::Test
   end
 
   def test_parse_inline_attributes
-    # Note: Currently inline attributes are parsed, indented attributes
-    # on separate lines are a TODO for the parser
     events = Udon.parse("|div :title Hello :count 42\n")
 
     attrs = events.select { |e| e[:type] == :attribute }
@@ -56,9 +54,24 @@ class UdonTest < Minitest::Test
 
     count_attr = attrs.find { |a| a[:key] == "count" }
     assert count_attr
-    # Value is returned as the parsed type - for unquoted integers, it's Integer
-    # (if parser recognizes it) or String otherwise
-    assert_includes [42, "42"], count_attr[:value]
+    # SPEC: Unquoted integers should be returned as Integer, not String
+    assert_equal 42, count_attr[:value], "Expected integer 42, got #{count_attr[:value].inspect}"
+  end
+
+  def test_parse_indented_attributes
+    # SPEC: Attributes can appear on indented lines after an element
+    events = Udon.parse("|div\n  :title Hello\n  :count 42\n")
+
+    attrs = events.select { |e| e[:type] == :attribute }
+    assert_equal 2, attrs.size, "Indented attributes should be parsed as attributes, not text"
+
+    title_attr = attrs.find { |a| a[:key] == "title" }
+    assert title_attr, "Should have :title attribute"
+    assert_equal "Hello", title_attr[:value]
+
+    count_attr = attrs.find { |a| a[:key] == "count" }
+    assert count_attr, "Should have :count attribute"
+    assert_equal 42, count_attr[:value]
   end
 
   def test_parse_empty_input
