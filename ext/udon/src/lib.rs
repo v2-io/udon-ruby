@@ -1,270 +1,231 @@
 //! Native Ruby extension for UDON parsing.
 //!
-//! This creates Ruby objects directly without JSON serialization,
-//! providing the fastest possible Ruby integration.
-//!
-//! Returns streaming events as an array of hashes, matching the
-//! SAX-style event model from udon-core.
+//! Maps udon-core events directly to Ruby hashes.
 
-use magnus::{
-    function,
-    prelude::*,
-    Error, RArray, RHash, RString, Ruby, Symbol,
-};
-use udon_core::{StreamingParser, StreamingEvent, ChunkSlice, ChunkArena};
-
-/// Resolve a ChunkSlice to bytes using the arena, then convert to Ruby String.
-fn slice_to_rstring(arena: &ChunkArena, slice: ChunkSlice) -> RString {
-    match arena.resolve(slice) {
-        Some(bytes) => RString::from_slice(bytes),
-        None => RString::new(""),
-    }
-}
+use magnus::{function, prelude::*, Error, RArray, RHash, RString, Ruby, Symbol};
+use udon_core::{Event, ParseErrorCode, Parser};
 
 /// Create a span hash { start: n, end: n }.
-fn span_to_hash(start: u32, end: u32) -> RHash {
+fn span_to_hash(span: &std::ops::Range<usize>) -> RHash {
     let hash = RHash::new();
-    let _ = hash.aset(Symbol::new("start"), start as i64);
-    let _ = hash.aset(Symbol::new("end"), end as i64);
+    let _ = hash.aset(Symbol::new("start"), span.start as i64);
+    let _ = hash.aset(Symbol::new("end"), span.end as i64);
     hash
 }
 
-/// Convert a UDON StreamingEvent to a Ruby hash.
-///
-/// Returns streaming events matching the udon-core StreamingEvent model:
-/// - ElementStart { name, span }
-/// - ElementEnd { span }
-/// - Attribute { key, span }
-/// - Value events (NilValue, BoolValue, IntegerValue, etc.)
-/// - ArrayStart/ArrayEnd
-/// - Text, Comment, RawContent
-/// - DirectiveStart/End, Interpolation
-/// - Error
-fn event_to_ruby_hash(ruby: &Ruby, arena: &ChunkArena, event: &StreamingEvent) -> RHash {
+/// Convert content bytes to Ruby string.
+fn content_to_rstring(content: &std::borrow::Cow<'_, [u8]>) -> RString {
+    RString::from_slice(content.as_ref())
+}
+
+/// Convert a UDON Event to a Ruby hash.
+fn event_to_ruby_hash(ruby: &Ruby, event: &Event) -> RHash {
     let hash = RHash::new();
 
     match event {
-        // ========== Structure Events ==========
+        // ========== Bracket Events (Start/End pairs) ==========
 
-        StreamingEvent::ElementStart { name, span } => {
+        Event::ElementStart { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("element_start"));
-            let _ = hash.aset(
-                Symbol::new("name"),
-                name.map(|n| slice_to_rstring(arena, n).as_value())
-                    .unwrap_or_else(|| ruby.qnil().as_value()),
-            );
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::ElementEnd { span } => {
+        Event::ElementEnd { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("element_end"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::EmbeddedStart { name, span } => {
+        Event::EmbeddedStart { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("embedded_start"));
-            let _ = hash.aset(
-                Symbol::new("name"),
-                name.map(|n| slice_to_rstring(arena, n).as_value())
-                    .unwrap_or_else(|| ruby.qnil().as_value()),
-            );
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::EmbeddedEnd { span } => {
+        Event::EmbeddedEnd { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("embedded_end"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Attribute Events ==========
-
-        StreamingEvent::Attribute { key, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("attribute"));
-            let _ = hash.aset(Symbol::new("key"), slice_to_rstring(arena, *key));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::DirectiveStart { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("directive_start"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Value Events ==========
+        Event::DirectiveEnd { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("directive_end"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
 
-        StreamingEvent::ArrayStart { span } => {
+        Event::ArrayStart { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("array_start"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::ArrayEnd { span } => {
+        Event::ArrayEnd { span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("array_end"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::NilValue { span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("nil_value"));
-            let _ = hash.aset(Symbol::new("value"), ruby.qnil());
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::FreeformStart { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("freeform_start"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::BoolValue { value, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("bool_value"));
-            let _ = hash.aset(Symbol::new("value"), *value);
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::FreeformEnd { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("freeform_end"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::IntegerValue { value, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("integer_value"));
-            let _ = hash.aset(Symbol::new("value"), ruby.integer_from_i64(*value));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::CommentStart { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("comment_start"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::FloatValue { value, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("float_value"));
-            let _ = hash.aset(Symbol::new("value"), ruby.float_from_f64(*value));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
-        }
-
-        StreamingEvent::RationalValue { numerator, denominator, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("rational_value"));
-            // Return as string "num/denom" - Ruby can convert with Rational()
-            let _ = hash.aset(
-                Symbol::new("value"),
-                RString::new(&format!("{}/{}", numerator, denominator)),
-            );
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
-        }
-
-        StreamingEvent::ComplexValue { real, imag, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("complex_value"));
-            // Return as string "real+imagi" - Ruby can convert with Complex()
-            let _ = hash.aset(
-                Symbol::new("value"),
-                RString::new(&format!("{}+{}i", real, imag)),
-            );
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
-        }
-
-        StreamingEvent::StringValue { value, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("string_value"));
-            let _ = hash.aset(Symbol::new("value"), slice_to_rstring(arena, *value));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
-        }
-
-        StreamingEvent::QuotedStringValue { value, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("quoted_string_value"));
-            let _ = hash.aset(Symbol::new("value"), slice_to_rstring(arena, *value));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::CommentEnd { span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("comment_end"));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
         // ========== Content Events ==========
 
-        StreamingEvent::Text { content, span } => {
+        Event::Name { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("name"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Text { content, span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("text"));
-            let _ = hash.aset(Symbol::new("content"), slice_to_rstring(arena, *content));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::Comment { content, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("comment"));
-            let _ = hash.aset(Symbol::new("content"), slice_to_rstring(arena, *content));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::Attr { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("attr"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::RawContent { content, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("raw_content"));
-            let _ = hash.aset(Symbol::new("content"), slice_to_rstring(arena, *content));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::StringValue { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("string_value"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Directive Events ==========
-
-        StreamingEvent::DirectiveStart { name, namespace, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("directive_start"));
-            let _ = hash.aset(Symbol::new("name"), slice_to_rstring(arena, *name));
-            let _ = hash.aset(
-                Symbol::new("namespace"),
-                namespace
-                    .map(|n| slice_to_rstring(arena, n).as_value())
-                    .unwrap_or_else(|| ruby.qnil().as_value()),
-            );
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::BareValue { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("bare_value"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::DirectiveEnd { span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("directive_end"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::BoolTrue { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("bool_true"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::InlineDirective(data) => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("inline_directive"));
-            let _ = hash.aset(Symbol::new("name"), slice_to_rstring(arena, data.name));
-            let _ = hash.aset(
-                Symbol::new("namespace"),
-                data.namespace
-                    .map(|n| slice_to_rstring(arena, n).as_value())
-                    .unwrap_or_else(|| ruby.qnil().as_value()),
-            );
-            let _ = hash.aset(Symbol::new("content"), slice_to_rstring(arena, data.content));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(data.span.start, data.span.end));
+        Event::BoolFalse { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("bool_false"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::Interpolation { expression, span } => {
+        Event::Nil { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("nil"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Integer { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("integer"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Float { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("float"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Rational { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("rational"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Complex { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("complex"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
+        }
+
+        Event::Interpolation { content, span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("interpolation"));
-            let _ = hash.aset(Symbol::new("expression"), slice_to_rstring(arena, *expression));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Reference Events ==========
-
-        StreamingEvent::IdReference { id, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("id_reference"));
-            let _ = hash.aset(Symbol::new("id"), slice_to_rstring(arena, *id));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::Reference { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("reference"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::AttributeMerge { id, span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("attribute_merge"));
-            let _ = hash.aset(Symbol::new("id"), slice_to_rstring(arena, *id));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::RawContent { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("raw_content"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Block Events ==========
-
-        StreamingEvent::FreeformStart { span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("freeform_start"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::Raw { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("raw"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        StreamingEvent::FreeformEnd { span } => {
-            let _ = hash.aset(Symbol::new("type"), Symbol::new("freeform_end"));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+        Event::Warning { content, span } => {
+            let _ = hash.aset(Symbol::new("type"), Symbol::new("warning"));
+            let _ = hash.aset(Symbol::new("content"), content_to_rstring(content));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
 
-        // ========== Error Events ==========
+        // ========== Error Event ==========
 
-        StreamingEvent::Error { code, span } => {
+        Event::Error { code, span } => {
             let _ = hash.aset(Symbol::new("type"), Symbol::new("error"));
-            let _ = hash.aset(Symbol::new("message"), RString::new(code.message()));
-            let _ = hash.aset(Symbol::new("span"), span_to_hash(span.start, span.end));
+            let _ = hash.aset(Symbol::new("code"), Symbol::new(error_code_name(code)));
+            let _ = hash.aset(Symbol::new("span"), span_to_hash(span));
         }
     }
 
     hash
+}
+
+/// Get error code name as string.
+fn error_code_name(code: &ParseErrorCode) -> &'static str {
+    match code {
+        ParseErrorCode::UnexpectedEof => "unexpected_eof",
+        ParseErrorCode::UnexpectedChar => "unexpected_char",
+        ParseErrorCode::Unclosed => "unclosed",
+        ParseErrorCode::UnclosedStringValue => "unclosed_string_value",
+        ParseErrorCode::UnclosedArray => "unclosed_array",
+        ParseErrorCode::UnclosedFreeform => "unclosed_freeform",
+        ParseErrorCode::UnclosedText => "unclosed_text",
+        ParseErrorCode::UnclosedInterpolation => "unclosed_interpolation",
+        ParseErrorCode::NoTabs => "no_tabs",
+    }
 }
 
 /// Parse UDON input and return an array of event hashes.
 fn parse(ruby: &Ruby, input: RString) -> Result<RArray, Error> {
     let input_bytes = unsafe { input.as_slice() };
 
-    // Create streaming parser with reasonable capacity
-    let capacity = (input_bytes.len() / 50).max(64);
-    let mut parser = StreamingParser::new(capacity);
-
-    // Feed input and finish
-    parser.feed(input_bytes);
-    parser.finish();
-
-    // Collect all events
     let result = RArray::new();
-    while let Some(event) = parser.read() {
-        result.push(event_to_ruby_hash(ruby, parser.arena(), &event))?;
-    }
+
+    Parser::new(input_bytes).parse(|event| {
+        let hash = event_to_ruby_hash(ruby, &event);
+        let _ = result.push(hash);
+    });
 
     Ok(result)
 }

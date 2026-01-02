@@ -20,7 +20,9 @@ end
 #   events.each do |event|
 #     case event[:type]
 #     when :element_start
-#       puts "Element: #{event[:name]}"
+#       puts "Element started"
+#     when :name
+#       puts "Name: #{event[:content]}"
 #     when :text
 #       puts "Text: #{event[:content]}"
 #     end
@@ -37,24 +39,32 @@ module Udon
     # @return [Array<Hash>] Array of event hashes
     # @raise [ParseError] If parsing fails catastrophically
     #
-    # Event types and their fields:
-    # - :element_start - name, id, classes, suffix, span
-    # - :element_end - span
-    # - :attribute - key, value, span
-    # - :text - content, span
-    # - :comment - content, span
-    # - :embedded_start - name, id, classes, span
-    # - :embedded_end - span
-    # - :directive_start - name, namespace, is_raw, span
-    # - :directive_end - span
-    # - :inline_directive - name, namespace, is_raw, content, span
-    # - :interpolation - expression, span
-    # - :raw_content - content, span
-    # - :id_reference - id, span
-    # - :attribute_merge - id, span
-    # - :freeform_start - span
-    # - :freeform_end - span
-    # - :error - message, span
+    # Event types (all have :span with :start/:end):
+    #
+    # Bracket events (start/end pairs):
+    # - :element_start, :element_end
+    # - :embedded_start, :embedded_end
+    # - :directive_start, :directive_end
+    # - :array_start, :array_end
+    # - :freeform_start, :freeform_end
+    # - :comment_start, :comment_end
+    #
+    # Content events (have :content):
+    # - :name - element/directive name
+    # - :text - text content
+    # - :attr - attribute name
+    # - :string_value - quoted string value
+    # - :bare_value - unquoted value
+    # - :bool_true, :bool_false - boolean values
+    # - :nil - nil/null value
+    # - :integer, :float, :rational, :complex - numeric values
+    # - :interpolation - interpolation expression
+    # - :reference - reference content
+    # - :raw_content, :raw - raw content
+    # - :warning - parser warning
+    #
+    # Error events:
+    # - :error - has :code instead of :content
     #
     def parse(input)
       input = input.to_s
