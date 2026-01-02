@@ -8,3 +8,9 @@ group :development do
   gem "rb_sys", "~> 0.9"
   gem "rake-compiler", "~> 1.2"
 end
+
+group :benchmark do
+  gem "nokogiri"
+  gem "json"
+  gem "rexml"
+end
