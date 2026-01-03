@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# UDON element syntax to Markdown converter
+# Converts UDON elements to Markdown shortcuts where possible
+#
+# Usage: bin/udon2md < input.udon > output.md
+#    or: bin/udon2md input.udon
+
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+
+output = input.dup
+
+# Headers: |h1 Title -> # Title
+output.gsub!(/^\|h1\s+(.*)$/, '# \1')
+output.gsub!(/^\|h2\s+(.*)$/, '## \1')
+output.gsub!(/^\|h3\s+(.*)$/, '### \1')
+output.gsub!(/^\|h4\s+(.*)$/, '#### \1')
+output.gsub!(/^\|h5\s+(.*)$/, '##### \1')
+output.gsub!(/^\|h6\s+(.*)$/, '###### \1')
+
+# Inline strong: |{strong text} -> **text**
+output.gsub!(/\|\{strong\s+([^}]+)\}/, '**\1**')
+
+# Inline em: |{em text} -> *text*
+output.gsub!(/\|\{em\s+([^}]+)\}/, '*\1*')
+
+# Inline code: |{code text} -> `text`
+output.gsub!(/\|\{code\s+([^}]+)\}/, '`\1`')
+
+# Links: |{a :href url text} -> [text](url)
+output.gsub!(/\|\{a\s+:href\s+(\S+)\s+([^}]+)\}/, '[\2](\1)')
+
+# Images: |{img :src url :alt text} -> ![text](url)
+output.gsub!(/\|\{img\s+:src\s+(\S+)\s+:alt\s+([^}]*)\}/, '![\2](\1)')
+
+# Horizontal rules: |hr -> ---
+output.gsub!(/^\|hr\s*$/, '---')
+
+# Blockquotes: |blockquote text -> > text
+output.gsub!(/^\|blockquote\s+(.*)$/, '> \1')
+
+puts output

@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# UDON to XML converter
+# Usage: bin/udon2xml < input.udon > output.xml
+#    or: bin/udon2xml input.udon
+
+require "bundler/setup"
+require "udon"
+
+def escape_xml(str)
+  str.to_s
+    .gsub("&", "&amp;")
+    .gsub("<", "&lt;")
+    .gsub(">", "&gt;")
+    .gsub('"', "&quot;")
+end
+
+def escape_xml_text(str)
+  str.to_s
+    .gsub("&", "&amp;")
+    .gsub("<", "&lt;")
+    .gsub(">", "&gt;")
+end
+
+class UdonToXml
+  Element = Struct.new(:name, :id, :classes, :attrs, :opened)
+
+  def initialize
+    @stack = []
+    @output = []
+    @current_attr = nil
+  end
+
+  def convert(events)
+    events.each { |e| process(e) }
+    @output.join
+  end
+
+  private
+
+  def current
+    @stack.last
+  end
+
+  def ensure_opened
+    return unless current && !current.opened
+    emit_open_tag(current)
+    current.opened = true
+  end
+
+  def emit_open_tag(el)
+    attrs = []
+    attrs << %{id="#{escape_xml(el.id)}"} if el.id
+    attrs << %{class="#{escape_xml(el.classes.join(' '))}"} unless el.classes.empty?
+    el.attrs.each { |k, v| attrs << %{#{k}="#{escape_xml(v)}"} }
+    attr_str = attrs.empty? ? "" : " " + attrs.join(" ")
+    @output << "<#{el.name || 'div'}#{attr_str}>"
+  end
+
+  def emit_close_tag(el)
+    @output << "</#{el.name || 'div'}>"
+  end
+
+  def process(event)
+    case event[:type]
+    when :element_start
+      ensure_opened
+      @stack.push(Element.new(nil, nil, [], {}, false))
+
+    when :name
+      current.name = event[:content] if current
+
+    when :attr
+      @current_attr = event[:content]
+
+    when :bare_value, :string_value, :integer, :float
+      if @current_attr && current
+        # Handle special attrs id/class
+        if @current_attr == "id"
+          current.id = event[:content].to_s
+        elsif @current_attr == "class"
+          current.classes << event[:content].to_s
+        else
+          current.attrs[@current_attr] = event[:content].to_s
+        end
+        @current_attr = nil
+      end
+
+    when :bool_true
+      current.attrs[@current_attr] = "true" if @current_attr && current
+      @current_attr = nil
+
+    when :bool_false
+      current.attrs[@current_attr] = "false" if @current_attr && current
+      @current_attr = nil
+
+    when :text
+      ensure_opened
+      @output << escape_xml_text(event[:content])
+
+    when :element_end
+      if current
+        ensure_opened
+        emit_close_tag(current)
+        @stack.pop
+      end
+
+    when :comment_start
+      ensure_opened
+      @output << "<!--"
+
+    when :comment_end
+      @output << "-->"
+
+    end
+  end
+end
+
+# Main
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+events = Udon.parse(input)
+puts UdonToXml.new.convert(events)

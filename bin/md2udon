@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Markdown to UDON element syntax converter
+# Converts Markdown shortcuts to explicit UDON elements
+#
+# Usage: bin/md2udon < input.md > output.udon
+#    or: bin/md2udon input.md
+
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+
+# Protect code blocks from transformation
+code_blocks = []
+output = input.gsub(/```[\s\S]*?```/) do |match|
+  code_blocks << match
+  "\x00CODE_BLOCK_#{code_blocks.size - 1}\x00"
+end
+
+# Headers: # Title -> |h1 Title (must be at start of line)
+output.gsub!(/^######\s+(.*)$/, '|h6 \1')
+output.gsub!(/^#####\s+(.*)$/, '|h5 \1')
+output.gsub!(/^####\s+(.*)$/, '|h4 \1')
+output.gsub!(/^###\s+(.*)$/, '|h3 \1')
+output.gsub!(/^##\s+(.*)$/, '|h2 \1')
+output.gsub!(/^#\s+(.*)$/, '|h1 \1')
+
+# Images first (before links, since ![...] contains [...])
+# ![alt](src) -> |{img :src src :alt alt}
+output.gsub!(/!\[([^\]]*)\]\(([^)]+)\)/, '|{img :src \2 :alt "\1"}')
+
+# Links: [text](url) -> |{a :href url text}
+output.gsub!(/\[([^\]]+)\]\(([^)]+)\)/, '|{a :href \2 \1}')
+
+# Bold: **text** -> |{strong text}
+output.gsub!(/\*\*([^*]+)\*\*/, '|{strong \1}')
+
+# Italic: *text* -> |{em text} (but not inside words)
+output.gsub!(/(?<![*\w])\*([^*]+)\*(?![*\w])/, '|{em \1}')
+
+# Inline code: `code` -> |{code code}
+output.gsub!(/`([^`]+)`/, '|{code \1}')
+
+# Horizontal rules: --- or *** or ___ -> |hr
+output.gsub!(/^(---+|\*\*\*+|___+)\s*$/, '|hr')
+
+# Blockquotes: > text -> |blockquote text
+output.gsub!(/^>\s+(.*)$/, '|blockquote \1')
+
+# Restore code blocks
+code_blocks.each_with_index do |block, i|
+  output.gsub!("\x00CODE_BLOCK_#{i}\x00", block)
+end
+
+puts output

@@ -1,0 +1,80 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# JSON to UDON converter
+# Usage: bin/json2udon < input.json > output.udon
+#    or: bin/json2udon input.json
+
+require "json"
+
+def value_to_udon(value, indent = 0)
+  prefix = "  " * indent
+  output = []
+
+  case value
+  when Hash
+    value.each do |k, v|
+      case v
+      when Hash
+        output << "#{prefix}|#{k}"
+        output << value_to_udon(v, indent + 1)
+      when Array
+        # Check if simple array of scalars
+        if v.all? { |x| scalar?(x) }
+          output << "#{prefix}:#{k} [#{v.map { |x| format_scalar(x) }.join(' ')}]"
+        else
+          output << "#{prefix}|#{k}"
+          v.each { |item| output << value_to_udon(item, indent + 1) }
+        end
+      when String
+        if v.include?("\n")
+          output << "#{prefix}|#{k}"
+          v.lines.each { |l| output << "#{prefix}  #{l.chomp}" }
+        elsif v.include?(" ") || v.empty?
+          output << "#{prefix}:#{k} \"#{v}\""
+        else
+          output << "#{prefix}:#{k} #{v}"
+        end
+      when Numeric, TrueClass, FalseClass
+        output << "#{prefix}:#{k} #{v}"
+      when NilClass
+        output << "#{prefix}:#{k} nil"
+      end
+    end
+  when Array
+    value.each_with_index do |item, i|
+      if scalar?(item)
+        output << "#{prefix}#{format_scalar(item)}"
+      else
+        output << "#{prefix}|_item"
+        output << value_to_udon(item, indent + 1)
+      end
+    end
+  when String
+    output << "#{prefix}#{value}"
+  when Numeric, TrueClass, FalseClass, NilClass
+    output << "#{prefix}#{value}"
+  end
+
+  output.reject(&:empty?).join("\n")
+end
+
+def scalar?(v)
+  v.is_a?(String) || v.is_a?(Numeric) || v.is_a?(TrueClass) || v.is_a?(FalseClass) || v.nil?
+end
+
+def format_scalar(v)
+  case v
+  when String
+    v.include?(" ") ? "\"#{v}\"" : v
+  when NilClass
+    "nil"
+  else
+    v.to_s
+  end
+end
+
+# Main
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+data = JSON.parse(input)
+puts value_to_udon(data)

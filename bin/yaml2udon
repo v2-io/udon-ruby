@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# YAML to UDON converter
+# Usage: bin/yaml2udon < input.yaml > output.udon
+#    or: bin/yaml2udon input.yaml
+
+require "yaml"
+require "date"
+
+def value_to_udon(value, indent = 0)
+  prefix = "  " * indent
+  output = []
+
+  case value
+  when Hash
+    value.each do |k, v|
+      key = k.to_s
+      case v
+      when Hash
+        output << "#{prefix}|#{key}"
+        output << value_to_udon(v, indent + 1)
+      when Array
+        # Check if simple array of scalars
+        if v.all? { |x| scalar?(x) }
+          output << "#{prefix}:#{key} [#{v.map { |x| format_scalar(x) }.join(' ')}]"
+        else
+          output << "#{prefix}|#{key}"
+          v.each { |item| output << value_to_udon(item, indent + 1) }
+        end
+      when String
+        if v.include?("\n")
+          output << "#{prefix}|#{key}"
+          v.lines.each { |l| output << "#{prefix}  #{l.chomp}" }
+        elsif v.include?(" ") || v.empty?
+          output << "#{prefix}:#{key} \"#{v}\""
+        else
+          output << "#{prefix}:#{key} #{v}"
+        end
+      when Numeric, TrueClass, FalseClass
+        output << "#{prefix}:#{key} #{v}"
+      when NilClass
+        output << "#{prefix}:#{key} nil"
+      end
+    end
+  when Array
+    value.each do |item|
+      if scalar?(item)
+        output << "#{prefix}#{format_scalar(item)}"
+      else
+        output << "#{prefix}|_item"
+        output << value_to_udon(item, indent + 1)
+      end
+    end
+  when String
+    output << "#{prefix}#{value}"
+  when Numeric, TrueClass, FalseClass, NilClass
+    output << "#{prefix}#{value}"
+  end
+
+  output.reject(&:empty?).join("\n")
+end
+
+def scalar?(v)
+  v.is_a?(String) || v.is_a?(Numeric) || v.is_a?(TrueClass) || v.is_a?(FalseClass) || v.nil?
+end
+
+def format_scalar(v)
+  case v
+  when String
+    v.include?(" ") ? "\"#{v}\"" : v
+  when NilClass
+    "nil"
+  else
+    v.to_s
+  end
+end
+
+# Main
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+data = YAML.safe_load(input, permitted_classes: [Date, Time, DateTime])
+puts value_to_udon(data)

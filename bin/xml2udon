@@ -1,0 +1,146 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# XML to UDON converter (compact output)
+# Usage: bin/xml2udon < input.xml > output.udon
+#    or: bin/xml2udon input.xml
+
+require "rexml/document"
+
+def element_to_udon(el)
+  # Build element opener
+  line = "|#{el.name}"
+
+  # Handle id attribute specially
+  if (id = el.attributes["id"])
+    line << "[#{id}]"
+  end
+
+  # Handle class attribute specially
+  if (classes = el.attributes["class"])
+    classes.split.each { |c| line << ".#{c}" }
+  end
+
+  # Other attributes
+  el.attributes.each do |name, value|
+    next if name == "id" || name == "class"
+    val_str = value.include?(" ") ? %{"#{value}"} : value
+    line << " :#{name} #{val_str}"
+  end
+
+  line
+end
+
+def simple_text_content?(el)
+  # Returns the text if element has only simple text content, nil otherwise
+  return nil if el.children.empty?
+
+  texts = el.children.select { |c| c.is_a?(REXML::Text) }
+  elements = el.children.select { |c| c.is_a?(REXML::Element) }
+
+  # Only text, no elements
+  if elements.empty? && texts.size >= 1
+    text = texts.map { |t| t.to_s.strip }.join(" ").strip
+    return text unless text.empty?
+  end
+
+  nil
+end
+
+def can_inline?(el)
+  # Can this element be inlined?
+  # Yes if it ends in a single text node (possibly through one level of nesting)
+  children = el.children.reject { |c| c.is_a?(REXML::Text) && c.to_s.strip.empty? }
+
+  return false if children.empty?
+
+  # Single text child - can inline
+  return true if children.size == 1 && children[0].is_a?(REXML::Text)
+
+  # Single element child that itself has single text child - can inline
+  if children.size == 1 && children[0].is_a?(REXML::Element)
+    child = children[0]
+    child_children = child.children.reject { |c| c.is_a?(REXML::Text) && c.to_s.strip.empty? }
+    return true if child_children.size == 1 && child_children[0].is_a?(REXML::Text)
+  end
+
+  false
+end
+
+def inline_content(el)
+  # Get inline representation of element's content
+  children = el.children.reject { |c| c.is_a?(REXML::Text) && c.to_s.strip.empty? }
+
+  if children.size == 1
+    child = children[0]
+    if child.is_a?(REXML::Text)
+      return child.to_s.strip
+    elsif child.is_a?(REXML::Element)
+      nested = element_to_udon(child)
+      nested_content = inline_content(child)
+      return nested_content.empty? ? nested : "#{nested} #{nested_content}"
+    end
+  end
+
+  ""
+end
+
+def xml_to_udon(node, indent = 0)
+  prefix = "  " * indent
+  output = []
+
+  case node
+  when REXML::Document
+    node.children.each do |child|
+      result = xml_to_udon(child, indent)
+      output << result unless result.nil? || result.empty?
+    end
+
+  when REXML::Element
+    el_line = element_to_udon(node)
+
+    # Check if we can inline everything
+    if can_inline?(node)
+      content = inline_content(node)
+      if content.empty?
+        output << "#{prefix}#{el_line}"
+      else
+        output << "#{prefix}#{el_line} #{content}"
+      end
+    else
+      output << "#{prefix}#{el_line}"
+
+      # Process children
+      node.children.each do |child|
+        result = xml_to_udon(child, indent + 1)
+        output << result unless result.nil? || result.empty?
+      end
+    end
+
+  when REXML::Text
+    text = node.to_s.strip
+    return nil if text.empty?
+
+    # Multi-line text
+    lines = text.lines.map(&:strip).reject(&:empty?)
+    lines.each { |l| output << "#{prefix}#{l}" }
+
+  when REXML::Comment
+    text = node.to_s.strip
+    if text.include?("\n")
+      output << "#{prefix};{"
+      text.lines.each { |l| output << "#{prefix}  #{l.chomp}" }
+      output << "#{prefix}}"
+    else
+      output << "#{prefix}; #{text}"
+    end
+  end
+
+  output.empty? ? nil : output.join("\n")
+end
+
+# Main
+input = ARGV[0] ? File.read(ARGV[0]) : $stdin.read
+doc = REXML::Document.new(input)
+result = xml_to_udon(doc)
+puts result if result
